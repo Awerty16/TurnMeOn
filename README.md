@@ -1,2 +1,0 @@
-# TurnMeOn
-discord bot
