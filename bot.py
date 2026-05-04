@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.1.1"  # Update this with each commit
+VERSION = "1.0.0"  # Update this with each commit
 
 CONFIG_FILE = "config.json"
 
@@ -66,6 +66,20 @@ def is_server_running():
         return "java.exe" in output
     except Exception:
         return False
+
+# ── Embed helpers ─────────────────────────────────────────────────────────────
+
+def embed_ok(title, description=None):
+    return discord.Embed(title=f"✅ {title}", description=description, color=0x57F287)
+
+def embed_err(title, description=None):
+    return discord.Embed(title=f"❌ {title}", description=description, color=0xED4245)
+
+def embed_wait(title, description=None):
+    return discord.Embed(title=f"⏳ {title}", description=description, color=0xFEE75C)
+
+def embed_info(title, description=None):
+    return discord.Embed(title=f"ℹ️ {title}", description=description, color=0x5865F2)
 
 # ── RCON ─────────────────────────────────────────────────────────────────────
 
@@ -253,12 +267,12 @@ class UpdateFieldModal(Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         if not check_password(self.pw_input.value):
-            await interaction.response.send_message("❌ Wrong password.", ephemeral=True)
+            await interaction.response.send_message(embed=embed_err("Wrong password"), ephemeral=True)
             return
         config = load_config()
         config[self.field_key] = self.field_input.value
         save_config(config)
-        await interaction.response.send_message("✅ Updated successfully.", ephemeral=True)
+        await interaction.response.send_message(embed=embed_ok("Updated successfully"), ephemeral=True)
 
 
 class UpdateSSHModal(Modal, title="Update SSH Credentials"):
@@ -269,14 +283,14 @@ class UpdateSSHModal(Modal, title="Update SSH Credentials"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if not check_password(self.pw_input.value):
-            await interaction.response.send_message("❌ Wrong password.", ephemeral=True)
+            await interaction.response.send_message(embed=embed_err("Wrong password"), ephemeral=True)
             return
         config = load_config()
         config["ssh_username"] = self.ssh_user.value
         config["ssh_password"] = self.ssh_pass.value
         config["ssh_port"] = self.ssh_port.value or "22"
         save_config(config)
-        await interaction.response.send_message("✅ SSH credentials updated.", ephemeral=True)
+        await interaction.response.send_message(embed=embed_ok("SSH credentials updated"), ephemeral=True)
 
 
 class ConfigPasswordModal(Modal, title="View Config"):
@@ -284,25 +298,21 @@ class ConfigPasswordModal(Modal, title="View Config"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if not check_password(self.pw_input.value):
-            await interaction.response.send_message("❌ Wrong password.", ephemeral=True)
+            await interaction.response.send_message(embed=embed_err("Wrong password"), ephemeral=True)
             return
         config = load_config()
-        msg = (
-            "🔧 **Current Config**\n"
-            f"```\n"
-            f"PC MAC:        {config.get('pc_mac', 'not set')}\n"
-            f"PC IP:         {config.get('pc_ip', 'not set')}\n"
-            f"SSH User:      {config.get('ssh_username', 'not set')}\n"
-            f"SSH Password:  {'*' * len(config.get('ssh_password', ''))}\n"
-            f"SSH Port:      {config.get('ssh_port', '22')}\n"
-            f".bat Path:     {config.get('bat_path', 'not set')}\n"
-            f"Boot Wait:     {config.get('boot_wait_seconds', 45)}s\n"
-            f"RCON Port:     {config.get('rcon_port', 25575)}\n"
-            f"RCON Password: {'*' * len(config.get('rcon_password', ''))}\n"
-            f"Mod Role:      {config.get('mod_role', 'not set')}\n"
-            f"```"
-        )
-        await interaction.response.send_message(msg, ephemeral=True)
+        embed = discord.Embed(title="🔧 Current Config", color=0x5865F2)
+        embed.add_field(name="PC MAC",        value=f"`{config.get('pc_mac', 'not set')}`",                         inline=True)
+        embed.add_field(name="PC IP",         value=f"`{config.get('pc_ip', 'not set')}`",                          inline=True)
+        embed.add_field(name="SSH Port",      value=f"`{config.get('ssh_port', '22')}`",                            inline=True)
+        embed.add_field(name="SSH User",      value=f"`{config.get('ssh_username', 'not set')}`",                   inline=True)
+        embed.add_field(name="SSH Password",  value=f"`{'*' * len(config.get('ssh_password', ''))}`",               inline=True)
+        embed.add_field(name="Boot Wait",     value=f"`{config.get('boot_wait_seconds', 45)}s`",                    inline=True)
+        embed.add_field(name=".bat Path",     value=f"`{config.get('bat_path', 'not set')}`",                       inline=False)
+        embed.add_field(name="RCON Port",     value=f"`{config.get('rcon_port', 25575)}`",                          inline=True)
+        embed.add_field(name="RCON Password", value=f"`{'*' * len(config.get('rcon_password', ''))}`",              inline=True)
+        embed.add_field(name="Mod Role",      value=f"`{config.get('mod_role', 'not set')}`",                       inline=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class UpdateBotModal(Modal, title="Update Bot"):
@@ -310,29 +320,34 @@ class UpdateBotModal(Modal, title="Update Bot"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if not check_password(self.pw_input.value):
-            await interaction.response.send_message("❌ Wrong password.", ephemeral=True)
+            await interaction.response.send_message(embed=embed_err("Wrong password"), ephemeral=True)
             return
-        await interaction.response.send_message("⏳ Pulling latest update from GitHub...", ephemeral=True)
+        await interaction.response.send_message(embed=embed_wait("Pulling latest update from GitHub..."), ephemeral=True)
         try:
             url = "https://raw.githubusercontent.com/Awerty16/TurnMeOn/main/bot.py"
-            urllib.request.urlretrieve(url, "bot.py")
-            await interaction.edit_original_response(content="✅ Updated! Restarting bot...")
+            # Download to a temp file first
+            urllib.request.urlretrieve(url, "bot_update.py")
+            # Swap it in
+            os.replace("bot_update.py", "bot.py")
+            await interaction.edit_original_response(embed=embed_ok("Updated!", "Restarting bot in 2 seconds..."))
+            await asyncio.sleep(2)
             os.system("sudo systemctl restart minecraftbot")
         except Exception as e:
-            await interaction.edit_original_response(content=f"❌ Update failed: {e}")
+            await interaction.edit_original_response(embed=embed_err("Update failed", str(e)))
 
 
 class RunCommandModal(Modal, title="Run Server Command"):
     command = TextInput(label="Command", placeholder="e.g. say Hello! or op Steve")
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message("⏳ Running command...", ephemeral=True)
+        await interaction.response.send_message(embed=embed_wait("Running command..."), ephemeral=True)
         try:
             result = rcon_command(self.command.value)
-            response = result if result else "✅ Command sent (no output returned)"
-            await interaction.edit_original_response(content=f"```\n{response}\n```")
+            response = result if result else "*(no output returned)*"
+            embed = embed_ok("Command sent", f"```\n{response}\n```")
+            await interaction.edit_original_response(embed=embed)
         except Exception as e:
-            await interaction.edit_original_response(content=f"❌ RCON error: {e}")
+            await interaction.edit_original_response(embed=embed_err("RCON error", str(e)))
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -350,18 +365,18 @@ async def setup(interaction: discord.Interaction):
 async def start(interaction: discord.Interaction):
     config = load_config()
     if not config:
-        await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
+        await interaction.response.send_message(embed=embed_err("Not configured", "Run `/setup` first."), ephemeral=True)
         return
 
-    await interaction.response.send_message("⏳ Sending Wake-on-LAN packet...")
+    await interaction.response.send_message(embed=embed_wait("Sending Wake-on-LAN packet..."))
 
     try:
         send_magic_packet(config["pc_mac"])
     except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Failed to send WoL packet: {e}")
+        await interaction.edit_original_response(embed=embed_err("WoL Failed", f"`{e}`"))
         return
 
-    await interaction.edit_original_response(content=f"📡 WoL packet sent! Waiting {config['boot_wait_seconds']}s for PC to boot...")
+    await interaction.edit_original_response(embed=embed_wait("Waking PC...", f"Waiting {config['boot_wait_seconds']}s for your PC to boot."))
     await asyncio.sleep(config["boot_wait_seconds"])
 
     for attempt in range(1, 4):
@@ -369,67 +384,61 @@ async def start(interaction: discord.Interaction):
             bat = config["bat_path"]
             bat_dir = "\\".join(bat.split("\\")[:-1])
             ssh_run(f'cmd /c "cd /d "{bat_dir}" && start /B "" "{bat}""')
-            await interaction.edit_original_response(content="✅ **Server is starting!** Give it a minute to load.")
+            await interaction.edit_original_response(embed=embed_ok("Server is starting!", "Give it a minute to fully load."))
             return
         except Exception as e:
             if attempt < 3:
-                await interaction.edit_original_response(
-                    content=f"⏳ PC not ready yet, retrying... (attempt {attempt}/3)"
-                )
+                await interaction.edit_original_response(embed=embed_wait(f"PC not ready yet, retrying...", f"Attempt {attempt}/3"))
                 await asyncio.sleep(15)
             else:
-                await interaction.edit_original_response(
-                    content=f"❌ Couldn't connect after 3 attempts. PC may still be booting — try `/start` again.\n`{e}`"
-                )
+                await interaction.edit_original_response(embed=embed_err("Could not connect", f"Failed after 3 attempts. PC may still be booting — try `/start` again.\n`{e}`"))
 
 
 @tree.command(name="stop", description="Gracefully stop the Minecraft server and hibernate the PC")
 async def stop(interaction: discord.Interaction):
     config = load_config()
     if not config:
-        await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
+        await interaction.response.send_message(embed=embed_err("Not configured", "Run `/setup` first."), ephemeral=True)
         return
 
-    await interaction.response.send_message("⏳ Stopping server gracefully...")
+    await interaction.response.send_message(embed=embed_wait("Stopping server gracefully..."))
 
     try:
         rcon_command("stop")
-        await interaction.edit_original_response(content="⏳ Stop command sent, waiting for server to shut down...")
+        await interaction.edit_original_response(embed=embed_wait("Stop command sent", "Waiting for the server to shut down..."))
         await asyncio.sleep(10)
         ssh_run("shutdown /h")
-        await interaction.edit_original_response(content="✅ Server stopped and world saved. PC is hibernating.")
+        await interaction.edit_original_response(embed=embed_ok("Server stopped", "World saved. PC is now hibernating. 💤"))
     except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Error: {e}")
+        await interaction.edit_original_response(embed=embed_err("Error", str(e)))
 
 
 @tree.command(name="status", description="Check if the Minecraft server is running")
 async def status(interaction: discord.Interaction):
     config = load_config()
     if not config:
-        await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
+        await interaction.response.send_message(embed=embed_err("Not configured", "Run `/setup` first."), ephemeral=True)
         return
 
-    await interaction.response.send_message("⏳ Checking server status...")
+    await interaction.response.send_message(embed=embed_wait("Checking server status..."))
 
     try:
         running = is_server_running()
         if running:
-            await interaction.edit_original_response(content="🟢 **Server is running!**")
+            await interaction.edit_original_response(embed=embed_ok("Server is online! 🟢"))
         else:
-            await interaction.edit_original_response(content="🔴 **Server is not running.**")
+            await interaction.edit_original_response(embed=embed_err("Server is offline 🔴"))
     except Exception as e:
-        await interaction.edit_original_response(
-            content=f"🔴 **Could not reach PC.** It may be hibernating.\n`{e}`"
-        )
+        await interaction.edit_original_response(embed=embed_err("Could not reach PC", f"It may be hibernating.\n`{e}`"))
 
 
 @tree.command(name="command", description="Run a command on the Minecraft server (mods only)")
 async def command(interaction: discord.Interaction):
     if not load_config():
-        await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
+        await interaction.response.send_message(embed=embed_err("Not configured", "Run `/setup` first."), ephemeral=True)
         return
     if not has_mod_role(interaction):
-        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+        await interaction.response.send_message(embed=embed_err("No permission", "You don't have the required role to use this command."), ephemeral=True)
         return
     await interaction.response.send_modal(RunCommandModal())
 
@@ -437,7 +446,7 @@ async def command(interaction: discord.Interaction):
 @tree.command(name="config", description="View current bot configuration")
 async def config_cmd(interaction: discord.Interaction):
     if not load_config():
-        await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
+        await interaction.response.send_message(embed=embed_err("Not configured", "Run `/setup` first."), ephemeral=True)
         return
     await interaction.response.send_modal(ConfigPasswordModal())
 
@@ -479,7 +488,7 @@ async def setmod(interaction: discord.Interaction):
 @tree.command(name="reset", description="Reset all bot configuration")
 async def reset(interaction: discord.Interaction):
     if not load_config():
-        await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
+        await interaction.response.send_message(embed=embed_err("Not configured", "Run `/setup` first."), ephemeral=True)
         return
     await interaction.response.send_modal(ResetModal())
 
@@ -489,18 +498,18 @@ class ResetModal(Modal, title="Reset Bot Configuration"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if not check_password(self.pw_input.value):
-            await interaction.response.send_message("❌ Wrong password.", ephemeral=True)
+            await interaction.response.send_message(embed=embed_err("Wrong password"), ephemeral=True)
             return
         os.remove(CONFIG_FILE)
         await interaction.response.send_message(
-            "🗑️ **Config has been reset.** Run `/setup` to configure the bot again.",
+            embed=embed_info("Config reset", "All settings have been cleared. Run `/setup` to configure the bot again."),
             ephemeral=True
         )
 
 @tree.command(name="update", description="Pull the latest bot.py from GitHub and restart")
 async def update(interaction: discord.Interaction):
     if not load_config():
-        await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
+        await interaction.response.send_message(embed=embed_err("Not configured", "Run `/setup` first."), ephemeral=True)
         return
     await interaction.response.send_modal(UpdateBotModal())
 
@@ -511,17 +520,12 @@ async def botstatus(interaction: discord.Interaction):
     delta = now - bot_start_time
     hours, remainder = divmod(int(delta.total_seconds()), 3600)
     minutes, seconds = divmod(remainder, 60)
-    uptime = f"{hours}h {minutes}m {seconds}s"
 
-    await interaction.response.send_message(
-        f"🤖 **Bot Status**\n"
-        f"```\n"
-        f"Version:  {VERSION}\n"
-        f"Status:   Online ✅\n"
-        f"Uptime:   {uptime}\n"
-        f"```",
-        ephemeral=False
-    )
+    embed = discord.Embed(title="🤖 Bot Status", color=0x5865F2)
+    embed.add_field(name="Version", value=f"`{VERSION}`", inline=True)
+    embed.add_field(name="Status", value="🟢 Online", inline=True)
+    embed.add_field(name="Uptime", value=f"`{hours}h {minutes}m {seconds}s`", inline=True)
+    await interaction.response.send_message(embed=embed)
 
 
 # ── Events ────────────────────────────────────────────────────────────────────
