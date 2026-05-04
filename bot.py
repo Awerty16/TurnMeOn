@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.1.0"  # Update this with each commit
+VERSION = "1.1.1"  # Update this with each commit
 
 CONFIG_FILE = "config.json"
 
@@ -527,12 +527,46 @@ async def botstatus(interaction: discord.Interaction):
 # ── Events ────────────────────────────────────────────────────────────────────
 
 bot_start_time = discord.utils.utcnow()
+server_online_since = None  # tracks when server came online
+
+async def status_loop():
+    global server_online_since
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:
+            if load_config():
+                running = is_server_running()
+                if running:
+                    if server_online_since is None:
+                        server_online_since = discord.utils.utcnow()
+                    activity = discord.Activity(
+                        type=discord.ActivityType.watching,
+                        name="over the Minecraft server",
+                        start=server_online_since
+                    )
+                else:
+                    server_online_since = None
+                    activity = discord.Activity(
+                        type=discord.ActivityType.watching,
+                        name="— Waiting for someone to hop on ATM10!"
+                    )
+            else:
+                # Not configured yet
+                activity = discord.Activity(
+                    type=discord.ActivityType.watching,
+                    name="— I'm not configured, run /setup to get started"
+                )
+            await client.change_presence(status=discord.Status.online, activity=activity)
+        except Exception:
+            pass
+        await asyncio.sleep(60)
 
 @client.event
 async def on_ready():
     global bot_start_time
     bot_start_time = discord.utils.utcnow()
     await tree.sync()
+    client.loop.create_task(status_loop())
     print(f"✅ Bot is online as {client.user}")
     print(f"   Version: {VERSION}")
     print(f"   Config file: {'found ✓' if load_config() else 'not found — run /setup'}")
