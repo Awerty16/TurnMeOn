@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.0.0"  # Update this with each commit
+VERSION = "1.1.0"  # Update this with each commit
 
 CONFIG_FILE = "config.json"
 
@@ -127,54 +127,119 @@ intents.members = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# ── Modals ────────────────────────────────────────────────────────────────────
+# ── Setup flow ────────────────────────────────────────────────────────────────
 
-class SetupModal1(Modal, title="Setup (1/2) — Network & Password"):
-    mac      = TextInput(label="PC MAC Address", placeholder="A1:B2:C3:D4:E5:F6")
-    ip       = TextInput(label="PC Local IP Address", placeholder="192.168.1.100")
-    ssh_user = TextInput(label="SSH Username", placeholder="Your Windows username")
-    ssh_pass = TextInput(label="SSH Password", placeholder="Your Windows password")
-    password = TextInput(label="Set Bot Password", placeholder="Pick a password for managing this bot")
+# Each step: (config_key, label, placeholder, hint)
+SETUP_STEPS = [
+    ("pc_mac",           "PC MAC Address",        "A1:B2:C3:D4:E5:F6",                   "Found via `ipconfig /all` on your Windows PC"),
+    ("pc_ip",            "PC Local IP Address",   "192.168.1.100",                        "Found via `ipconfig /all` — IPv4 Address"),
+    ("ssh_username",     "SSH Username",          "Your Windows username",                "The username you log into Windows with"),
+    ("ssh_password",     "SSH Password",          "Your Windows password",                "The password you log into Windows with"),
+    ("ssh_port",         "SSH Port",              "22",                                   "Default is 22, leave as is if unsure"),
+    ("bat_path",         ".bat File Path",        r"C:\minecraft-server\start.bat",       "Full path to your Minecraft server start.bat"),
+    ("rcon_password",    "RCON Password",         "From your server.properties",          "Set enable-rcon=true in server.properties first"),
+    ("mod_role",         "Mod Role Name",         "e.g. Mod or Admin",                   "The Discord role allowed to use /command"),
+    ("boot_wait_seconds","PC Boot Time (seconds)","45",                                   "How long your PC takes to boot from hibernation"),
+    ("password",         "Bot Admin Password",    "Pick a strong password",              "Used to protect config and update commands"),
+]
 
-    async def on_submit(self, interaction: discord.Interaction):
-        part1 = {
-            "pc_mac": self.mac.value.replace("-", ":").upper(),
-            "pc_ip": self.ip.value,
-            "ssh_username": self.ssh_user.value,
-            "ssh_password": self.ssh_pass.value,
-            "ssh_port": "22",
-            "password": self.password.value
-        }
-        await interaction.response.send_modal(SetupModal2(part1))
+# In-memory store for setup sessions: user_id -> partial config dict
+setup_sessions = {}
 
+def make_setup_embed(step_index, partial_config):
+    step = SETUP_STEPS[step_index]
+    total = len(SETUP_STEPS)
+    filled = len(partial_config)
+    bar = "█" * filled + "░" * (total - filled)
 
-class SetupModal2(Modal, title="Setup (2/2) — Server & RCON"):
-    bat       = TextInput(label=".bat File Path", placeholder=r"C:\minecraft-server\start.bat")
-    boot_wait = TextInput(label="PC Boot Time (seconds)", placeholder="45", default="45")
-    ssh_port  = TextInput(label="SSH Port", placeholder="22", default="22")
-    rcon_pass = TextInput(label="RCON Password", placeholder="From your server.properties")
-    mod_role  = TextInput(label="Mod Role Name", placeholder="The Discord role allowed to use /command")
+    embed = discord.Embed(
+        title="⚙️ Bot Setup",
+        description=f"**Step {step_index + 1} of {total}**\n`{bar}`",
+        color=0x57F287
+    )
+    embed.add_field(name=f"Enter: {step[1]}", value=f"💡 {step[3]}", inline=False)
 
-    def __init__(self, part1_data):
-        super().__init__()
-        self.part1_data = part1_data
-
-    async def on_submit(self, interaction: discord.Interaction):
-        config = {
-            **self.part1_data,
-            "bat_path": self.bat.value,
-            "boot_wait_seconds": int(self.boot_wait.value or 45),
-            "ssh_port": self.ssh_port.value or "22",
-            "rcon_password": self.rcon_pass.value,
-            "rcon_port": 25575,
-            "mod_role": self.mod_role.value
-        }
-        save_config(config)
-        await interaction.response.send_message(
-            "✅ **Setup complete!** Bot is ready to use.\n"
-            "Run `/status` to test the connection, or `/start` to wake your PC.",
-            ephemeral=True
+    if partial_config:
+        summary = "\n".join(
+            f"✅ **{SETUP_STEPS[i][1]}**: {'`' + ('*' * 8 if SETUP_STEPS[i][0] in ('ssh_password', 'password', 'rcon_password') else str(v)) + '`'}"
+            for i, (k, v) in enumerate(partial_config.items())
         )
+        embed.add_field(name="Saved so far", value=summary, inline=False)
+
+    embed.set_footer(text="Click the button below to enter your value")
+    return embed
+
+class SetupStepModal(Modal):
+    def __init__(self, step_index, message):
+        step = SETUP_STEPS[step_index]
+        super().__init__(title=f"Step {step_index + 1}/{len(SETUP_STEPS)} — {step[1]}")
+        self.step_index = step_index
+        self.message = message
+        self.value_input = TextInput(
+            label=step[1],
+            placeholder=step[2],
+            default="22" if step[0] == "ssh_port" else ("45" if step[0] == "boot_wait_seconds" else discord.utils.MISSING)
+        )
+        self.add_item(self.value_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        if user_id not in setup_sessions:
+            setup_sessions[user_id] = {}
+
+        key = SETUP_STEPS[self.step_index][0]
+        value = self.value_input.value.strip()
+
+        # Normalise specific fields
+        if key == "pc_mac":
+            value = value.replace("-", ":").upper()
+        if key == "boot_wait_seconds":
+            try:
+                value = int(value)
+            except ValueError:
+                value = 45
+
+        setup_sessions[user_id][key] = value
+        next_step = self.step_index + 1
+
+        if next_step >= len(SETUP_STEPS):
+            # All done — save config
+            config = {**setup_sessions[user_id], "rcon_port": 25575}
+            save_config(config)
+            del setup_sessions[user_id]
+            embed = discord.Embed(
+                title="✅ Setup Complete!",
+                description="All settings saved. Your bot is ready to use!\n\nRun `/start` to wake your PC or `/status` to check the connection.",
+                color=0x57F287
+            )
+            await interaction.response.edit_message(embed=embed, view=None)
+        else:
+            # Show next step
+            embed = make_setup_embed(next_step, setup_sessions[user_id])
+            view = SetupStepView(next_step, self.message)
+            await interaction.response.edit_message(embed=embed, view=view)
+
+
+class SetupStepView(discord.ui.View):
+    def __init__(self, step_index, message=None):
+        super().__init__(timeout=300)
+        self.step_index = step_index
+        self.message = message
+        step_name = SETUP_STEPS[step_index][1]
+        btn = discord.ui.Button(label=f"Enter {step_name}", style=discord.ButtonStyle.primary, emoji="✏️")
+        btn.callback = self.button_callback
+        self.add_item(btn)
+
+    async def button_callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(SetupStepModal(self.step_index, self.message))
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                embed = discord.Embed(title="⏰ Setup Timed Out", description="Run `/setup` to start again.", color=0xFF0000)
+                await self.message.edit(embed=embed, view=None)
+            except Exception:
+                pass
 
 
 class UpdateFieldModal(Modal):
@@ -274,7 +339,11 @@ class RunCommandModal(Modal, title="Run Server Command"):
 
 @tree.command(name="setup", description="Configure the bot for the first time")
 async def setup(interaction: discord.Interaction):
-    await interaction.response.send_modal(SetupModal1())
+    setup_sessions[interaction.user.id] = {}
+    embed = make_setup_embed(0, {})
+    view = SetupStepView(0)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    view.message = await interaction.original_response()
 
 
 @tree.command(name="start", description="Wake the PC and start the Minecraft server")
@@ -406,6 +475,27 @@ async def setmod(interaction: discord.Interaction):
     await interaction.response.send_modal(
         UpdateFieldModal("Update Mod Role", "Mod Role Name", "mod_role")
     )
+
+@tree.command(name="reset", description="Reset all bot configuration")
+async def reset(interaction: discord.Interaction):
+    if not load_config():
+        await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
+        return
+    await interaction.response.send_modal(ResetModal())
+
+
+class ResetModal(Modal, title="Reset Bot Configuration"):
+    pw_input = TextInput(label="Bot Password", placeholder="Enter the bot password to confirm reset")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not check_password(self.pw_input.value):
+            await interaction.response.send_message("❌ Wrong password.", ephemeral=True)
+            return
+        os.remove(CONFIG_FILE)
+        await interaction.response.send_message(
+            "🗑️ **Config has been reset.** Run `/setup` to configure the bot again.",
+            ephemeral=True
+        )
 
 @tree.command(name="update", description="Pull the latest bot.py from GitHub and restart")
 async def update(interaction: discord.Interaction):
