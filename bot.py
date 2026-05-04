@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.0.0"  # Update this with each commit
+VERSION = "1.2.1"  # Update this with each commit
 
 CONFIG_FILE = "config.json"
 
@@ -382,8 +382,7 @@ async def start(interaction: discord.Interaction):
     for attempt in range(1, 4):
         try:
             bat = config["bat_path"]
-            bat_dir = "\\".join(bat.split("\\")[:-1])
-            ssh_run(f'cmd /c "cd /d "{bat_dir}" && start /B "" "{bat}""')
+            ssh_run(f'cmd "{bat}"')
             await interaction.edit_original_response(embed=embed_ok("Server is starting!", "Give it a minute to fully load."))
             return
         except Exception as e:
