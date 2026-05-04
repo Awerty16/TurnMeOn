@@ -5,7 +5,15 @@ import json
 import os
 import asyncio
 import paramiko
+import socket
+import struct
+import urllib.request
 from wakeonlan import send_magic_packet
+from dotenv import load_dotenv
+
+load_dotenv()
+
+VERSION = "1.0.0"  # Update this with each commit
 
 CONFIG_FILE = "config.json"
 
@@ -27,20 +35,29 @@ def check_password(entered):
         return False
     return entered == config.get("password")
 
+def has_mod_role(interaction: discord.Interaction):
+    config = load_config()
+    if not config:
+        return False
+    mod_role = config.get("mod_role", "").strip().lower()
+    if not mod_role:
+        return False
+    return any(r.name.lower() == mod_role for r in interaction.user.roles)
+
 def ssh_run(command):
     config = load_config()
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(
         config["pc_ip"],
         port=int(config["ssh_port"]),
         username=config["ssh_username"],
         password=config["ssh_password"],
         timeout=10
     )
-    stdin, stdout, stderr = client.exec_command(command)
+    stdin, stdout, stderr = ssh.exec_command(command)
     output = stdout.read().decode().strip()
-    client.close()
+    ssh.close()
     return output
 
 def is_server_running():
@@ -50,24 +67,77 @@ def is_server_running():
     except Exception:
         return False
 
+# ── RCON ─────────────────────────────────────────────────────────────────────
+
+class RCONClient:
+    def __init__(self, host, port, password):
+        self.host = host
+        self.port = int(port)
+        self.password = password
+        self.sock = None
+        self._request_id = 1
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(10)
+        self.sock.connect((self.host, self.port))
+        self._send(3, self.password)  # 3 = SERVERDATA_AUTH
+
+    def _send(self, pkt_type, data):
+        req_id = self._request_id
+        self._request_id += 1
+        payload = data.encode("utf-8") + b"\x00\x00"
+        header = struct.pack("<iii", len(payload) + 8, req_id, pkt_type)
+        self.sock.sendall(header + payload)
+        raw_len = self.sock.recv(4)
+        if not raw_len:
+            return None, None
+        pkt_len = struct.unpack("<i", raw_len)[0]
+        raw = b""
+        while len(raw) < pkt_len:
+            raw += self.sock.recv(pkt_len - len(raw))
+        resp_id, resp_type = struct.unpack("<ii", raw[:8])
+        resp_body = raw[8:-2].decode("utf-8")
+        return resp_id, resp_body
+
+    def command(self, cmd):
+        resp_id, body = self._send(2, cmd)  # 2 = SERVERDATA_EXECCOMMAND
+        return body
+
+    def disconnect(self):
+        if self.sock:
+            self.sock.close()
+
+def rcon_command(cmd):
+    config = load_config()
+    rcon = RCONClient(
+        config["pc_ip"],
+        config.get("rcon_port", 25575),
+        config.get("rcon_password", "")
+    )
+    rcon.connect()
+    result = rcon.command(cmd)
+    rcon.disconnect()
+    return result
+
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 
 intents = discord.Intents.default()
+intents.members = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
 # ── Modals ────────────────────────────────────────────────────────────────────
 
 class SetupModal1(Modal, title="Setup (1/2) — Network & Password"):
-    mac = TextInput(label="PC MAC Address", placeholder="A1:B2:C3:D4:E5:F6")
-    ip = TextInput(label="PC Local IP Address", placeholder="192.168.1.100")
+    mac      = TextInput(label="PC MAC Address", placeholder="A1:B2:C3:D4:E5:F6")
+    ip       = TextInput(label="PC Local IP Address", placeholder="192.168.1.100")
     ssh_user = TextInput(label="SSH Username", placeholder="Your Windows username")
     ssh_pass = TextInput(label="SSH Password", placeholder="Your Windows password")
     password = TextInput(label="Set Bot Password", placeholder="Pick a password for managing this bot")
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Store part 1 data temporarily and show modal 2
-        self._part1 = {
+        part1 = {
             "pc_mac": self.mac.value.replace("-", ":").upper(),
             "pc_ip": self.ip.value,
             "ssh_username": self.ssh_user.value,
@@ -75,13 +145,15 @@ class SetupModal1(Modal, title="Setup (1/2) — Network & Password"):
             "ssh_port": "22",
             "password": self.password.value
         }
-        modal2 = SetupModal2(self._part1)
-        await interaction.response.send_modal(modal2)
+        await interaction.response.send_modal(SetupModal2(part1))
 
-class SetupModal2(Modal, title="Setup (2/2) — Server"):
-    bat = TextInput(label=".bat File Path", placeholder=r"C:\minecraft-server\start.bat")
+
+class SetupModal2(Modal, title="Setup (2/2) — Server & RCON"):
+    bat       = TextInput(label=".bat File Path", placeholder=r"C:\minecraft-server\start.bat")
     boot_wait = TextInput(label="PC Boot Time (seconds)", placeholder="45", default="45")
-    ssh_port = TextInput(label="SSH Port", placeholder="22", default="22")
+    ssh_port  = TextInput(label="SSH Port", placeholder="22", default="22")
+    rcon_pass = TextInput(label="RCON Password", placeholder="From your server.properties")
+    mod_role  = TextInput(label="Mod Role Name", placeholder="The Discord role allowed to use /command")
 
     def __init__(self, part1_data):
         super().__init__()
@@ -92,7 +164,10 @@ class SetupModal2(Modal, title="Setup (2/2) — Server"):
             **self.part1_data,
             "bat_path": self.bat.value,
             "boot_wait_seconds": int(self.boot_wait.value or 45),
-            "ssh_port": self.ssh_port.value or "22"
+            "ssh_port": self.ssh_port.value or "22",
+            "rcon_password": self.rcon_pass.value,
+            "rcon_port": 25575,
+            "mod_role": self.mod_role.value
         }
         save_config(config)
         await interaction.response.send_message(
@@ -101,18 +176,6 @@ class SetupModal2(Modal, title="Setup (2/2) — Server"):
             ephemeral=True
         )
 
-class PasswordModal(Modal, title="Enter Password"):
-    password = TextInput(label="Password", placeholder="Enter the bot password")
-
-    def __init__(self, action_callback):
-        super().__init__()
-        self.action_callback = action_callback
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not check_password(self.password.value):
-            await interaction.response.send_message("❌ Wrong password.", ephemeral=True)
-            return
-        await self.action_callback(interaction)
 
 class UpdateFieldModal(Modal):
     def __init__(self, title, field_label, field_key, placeholder=""):
@@ -120,7 +183,7 @@ class UpdateFieldModal(Modal):
         self.field_key = field_key
         self.field_input = TextInput(label=field_label, placeholder=placeholder)
         self.add_item(self.field_input)
-        self.pw_input = TextInput(label="Password", placeholder="Enter the bot password")
+        self.pw_input = TextInput(label="Bot Password", placeholder="Enter the bot password")
         self.add_item(self.pw_input)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -130,10 +193,8 @@ class UpdateFieldModal(Modal):
         config = load_config()
         config[self.field_key] = self.field_input.value
         save_config(config)
-        await interaction.response.send_message(
-            f"✅ **{self.field_key}** updated successfully.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("✅ Updated successfully.", ephemeral=True)
+
 
 class UpdateSSHModal(Modal, title="Update SSH Credentials"):
     ssh_user = TextInput(label="SSH Username", placeholder="Your Windows username")
@@ -152,6 +213,7 @@ class UpdateSSHModal(Modal, title="Update SSH Credentials"):
         save_config(config)
         await interaction.response.send_message("✅ SSH credentials updated.", ephemeral=True)
 
+
 class ConfigPasswordModal(Modal, title="View Config"):
     pw_input = TextInput(label="Password", placeholder="Enter the bot password")
 
@@ -163,16 +225,50 @@ class ConfigPasswordModal(Modal, title="View Config"):
         msg = (
             "🔧 **Current Config**\n"
             f"```\n"
-            f"PC MAC:       {config.get('pc_mac', 'not set')}\n"
-            f"PC IP:        {config.get('pc_ip', 'not set')}\n"
-            f"SSH User:     {config.get('ssh_username', 'not set')}\n"
-            f"SSH Password: {'*' * len(config.get('ssh_password', ''))}\n"
-            f"SSH Port:     {config.get('ssh_port', '22')}\n"
-            f".bat Path:    {config.get('bat_path', 'not set')}\n"
-            f"Boot Wait:    {config.get('boot_wait_seconds', 45)}s\n"
+            f"PC MAC:        {config.get('pc_mac', 'not set')}\n"
+            f"PC IP:         {config.get('pc_ip', 'not set')}\n"
+            f"SSH User:      {config.get('ssh_username', 'not set')}\n"
+            f"SSH Password:  {'*' * len(config.get('ssh_password', ''))}\n"
+            f"SSH Port:      {config.get('ssh_port', '22')}\n"
+            f".bat Path:     {config.get('bat_path', 'not set')}\n"
+            f"Boot Wait:     {config.get('boot_wait_seconds', 45)}s\n"
+            f"RCON Port:     {config.get('rcon_port', 25575)}\n"
+            f"RCON Password: {'*' * len(config.get('rcon_password', ''))}\n"
+            f"Mod Role:      {config.get('mod_role', 'not set')}\n"
             f"```"
         )
         await interaction.response.send_message(msg, ephemeral=True)
+
+
+class UpdateBotModal(Modal, title="Update Bot"):
+    pw_input = TextInput(label="Password", placeholder="Enter the bot password")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not check_password(self.pw_input.value):
+            await interaction.response.send_message("❌ Wrong password.", ephemeral=True)
+            return
+        await interaction.response.send_message("⏳ Pulling latest update from GitHub...", ephemeral=True)
+        try:
+            url = "https://raw.githubusercontent.com/Awerty16/TurnMeOn/main/bot.py"
+            urllib.request.urlretrieve(url, "bot.py")
+            await interaction.edit_original_response(content="✅ Updated! Restarting bot...")
+            os.system("sudo systemctl restart minecraftbot")
+        except Exception as e:
+            await interaction.edit_original_response(content=f"❌ Update failed: {e}")
+
+
+class RunCommandModal(Modal, title="Run Server Command"):
+    command = TextInput(label="Command", placeholder="e.g. say Hello! or op Steve")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.send_message("⏳ Running command...", ephemeral=True)
+        try:
+            result = rcon_command(self.command.value)
+            response = result if result else "✅ Command sent (no output returned)"
+            await interaction.edit_original_response(content=f"```\n{response}\n```")
+        except Exception as e:
+            await interaction.edit_original_response(content=f"❌ RCON error: {e}")
+
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
@@ -199,13 +295,10 @@ async def start(interaction: discord.Interaction):
     await interaction.edit_original_response(content=f"📡 WoL packet sent! Waiting {config['boot_wait_seconds']}s for PC to boot...")
     await asyncio.sleep(config["boot_wait_seconds"])
 
-    # Try SSH a few times in case boot is slow
     for attempt in range(1, 4):
         try:
             bat = config["bat_path"]
-            # Get the directory the .bat file lives in
             bat_dir = "\\".join(bat.split("\\")[:-1])
-            # Run via cmd so 'start' works correctly
             ssh_run(f'cmd /c "cd /d "{bat_dir}" && start /B "" "{bat}""')
             await interaction.edit_original_response(content="✅ **Server is starting!** Give it a minute to load.")
             return
@@ -221,21 +314,21 @@ async def start(interaction: discord.Interaction):
                 )
 
 
-@tree.command(name="stop", description="Stop the Minecraft server and hibernate the PC")
+@tree.command(name="stop", description="Gracefully stop the Minecraft server and hibernate the PC")
 async def stop(interaction: discord.Interaction):
     config = load_config()
     if not config:
         await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
         return
 
-    await interaction.response.send_message("⏳ Stopping server...")
+    await interaction.response.send_message("⏳ Stopping server gracefully...")
 
     try:
-        # Stop the Minecraft server gracefully via its console, then hibernate
-        ssh_run('taskkill /F /IM java.exe')
-        await asyncio.sleep(3)
-        ssh_run('shutdown /h')
-        await interaction.edit_original_response(content="✅ Server stopped and PC is hibernating.")
+        rcon_command("stop")
+        await interaction.edit_original_response(content="⏳ Stop command sent, waiting for server to shut down...")
+        await asyncio.sleep(10)
+        ssh_run("shutdown /h")
+        await interaction.edit_original_response(content="✅ Server stopped and world saved. PC is hibernating.")
     except Exception as e:
         await interaction.edit_original_response(content=f"❌ Error: {e}")
 
@@ -259,6 +352,17 @@ async def status(interaction: discord.Interaction):
         await interaction.edit_original_response(
             content=f"🔴 **Could not reach PC.** It may be hibernating.\n`{e}`"
         )
+
+
+@tree.command(name="command", description="Run a command on the Minecraft server (mods only)")
+async def command(interaction: discord.Interaction):
+    if not load_config():
+        await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
+        return
+    if not has_mod_role(interaction):
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+        return
+    await interaction.response.send_modal(RunCommandModal())
 
 
 @tree.command(name="config", description="View current bot configuration")
@@ -297,41 +401,50 @@ async def setboot(interaction: discord.Interaction):
 async def setssh(interaction: discord.Interaction):
     await interaction.response.send_modal(UpdateSSHModal())
 
+@tree.command(name="setmod", description="Update the mod role name")
+async def setmod(interaction: discord.Interaction):
+    await interaction.response.send_modal(
+        UpdateFieldModal("Update Mod Role", "Mod Role Name", "mod_role")
+    )
 
 @tree.command(name="update", description="Pull the latest bot.py from GitHub and restart")
 async def update(interaction: discord.Interaction):
-    if not check_password:
+    if not load_config():
         await interaction.response.send_message("⚠️ Bot not configured yet. Run `/setup` first.", ephemeral=True)
         return
     await interaction.response.send_modal(UpdateBotModal())
 
-class UpdateBotModal(Modal, title="Update Bot"):
-    pw_input = TextInput(label="Password", placeholder="Enter the bot password")
 
-    async def on_submit(self, interaction: discord.Interaction):
-        if not check_password(self.pw_input.value):
-            await interaction.response.send_message("❌ Wrong password.", ephemeral=True)
-            return
+@tree.command(name="botstatus", description="Show bot version and uptime")
+async def botstatus(interaction: discord.Interaction):
+    now = discord.utils.utcnow()
+    delta = now - bot_start_time
+    hours, remainder = divmod(int(delta.total_seconds()), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    uptime = f"{hours}h {minutes}m {seconds}s"
 
-        await interaction.response.send_message("⏳ Pulling latest update from GitHub...", ephemeral=True)
-
-        try:
-            import urllib.request
-            url = "https://raw.githubusercontent.com/Awerty16/TurnMeOn/main/bot.py"
-            urllib.request.urlretrieve(url, "bot.py")
-            await interaction.edit_original_response(content="✅ Updated! Restarting bot...")
-            # Restart the systemd service
-            os.system("sudo systemctl restart minecraftbot")
-        except Exception as e:
-            await interaction.edit_original_response(content=f"❌ Update failed: {e}")
+    await interaction.response.send_message(
+        f"🤖 **Bot Status**\n"
+        f"```\n"
+        f"Version:  {VERSION}\n"
+        f"Status:   Online ✅\n"
+        f"Uptime:   {uptime}\n"
+        f"```",
+        ephemeral=False
+    )
 
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
+bot_start_time = discord.utils.utcnow()
+
 @client.event
 async def on_ready():
+    global bot_start_time
+    bot_start_time = discord.utils.utcnow()
     await tree.sync()
     print(f"✅ Bot is online as {client.user}")
+    print(f"   Version: {VERSION}")
     print(f"   Config file: {'found ✓' if load_config() else 'not found — run /setup'}")
 
 # ── Run ───────────────────────────────────────────────────────────────────────
