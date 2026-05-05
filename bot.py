@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.2.1"  # Update this with each commit
+VERSION = "1.2.2"  # Update this with each commit
 
 CONFIG_FILE = "config.json"
 
@@ -59,6 +59,25 @@ def ssh_run(command):
     output = stdout.read().decode().strip()
     ssh.close()
     return output
+
+def ssh_run_detached(command):
+    """Run a command over SSH without waiting for it to finish."""
+    config = load_config()
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(
+        config["pc_ip"],
+        port=int(config["ssh_port"]),
+        username=config["ssh_username"],
+        password=config["ssh_password"],
+        timeout=10
+    )
+    # get_pty=False, don't wait for output
+    transport = ssh.get_transport()
+    channel = transport.open_session()
+    channel.exec_command(command)
+    # Don't read output, just close and return
+    ssh.close()
 
 def is_server_running():
     try:
@@ -382,7 +401,7 @@ async def start(interaction: discord.Interaction):
     for attempt in range(1, 4):
         try:
             bat = config["bat_path"]
-            ssh_run(f'cmd "{bat}"')
+            ssh_run_detached(f'cmd "{bat}"')
             await interaction.edit_original_response(embed=embed_ok("Server is starting!", "Give it a minute to fully load."))
             return
         except Exception as e:
