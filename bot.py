@@ -483,7 +483,7 @@ async def stop(interaction: discord.Interaction):
         rcon_command("stop")
         await interaction.edit_original_response(embed=embed_wait("Stop command sent", "Waiting for the server to shut down..."))
         await asyncio.sleep(10)
-        ssh_run("shutdown /h")
+        ssh_run("shutdown /s /t 0")
         await interaction.edit_original_response(embed=embed_ok("Server stopped", "World saved. PC is now hibernating. 💤"))
     except Exception as e:
         await interaction.edit_original_response(embed=embed_err("Error", str(e)))
