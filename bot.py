@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.2.2"  # Update this with each commit
+VERSION = "1.2.4"  # Update this with each commit
 
 CONFIG_FILE = "config.json"
 
@@ -355,6 +355,28 @@ class UpdateBotModal(Modal, title="Update Bot"):
             await interaction.edit_original_response(embed=embed_err("Update failed", str(e)))
 
 
+class LogsModal(Modal, title="View Bot Logs"):
+    pw_input = TextInput(label="Bot Password", placeholder="Enter the bot password")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not check_password(self.pw_input.value):
+            await interaction.response.send_message(embed=embed_err("Wrong password"), ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed_wait("Fetching logs..."), ephemeral=True)
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["journalctl", "-u", "minecraftbot", "-n", "100", "--no-pager"],
+                capture_output=True, text=True
+            )
+            output = result.stdout or "No output returned."
+            if len(output) > 1900:
+                output = output[-1900:]
+            await interaction.edit_original_response(embed=embed_info("Bot Logs", f"```\n{output}\n```"))
+        except Exception as e:
+            await interaction.edit_original_response(embed=embed_err("Failed to fetch logs", str(e)))
+
+
 class RunCommandModal(Modal, title="Run Server Command"):
     command = TextInput(label="Command", placeholder="e.g. say Hello! or op Steve")
 
@@ -380,6 +402,27 @@ async def setup(interaction: discord.Interaction):
     view.message = await interaction.original_response()
 
 
+class SkipWakeView(discord.ui.View):
+    def __init__(self, mod_role: str, skip_event: asyncio.Event):
+        super().__init__(timeout=None)
+        self.mod_role = mod_role.strip().lower()
+        self.skip_event = skip_event
+
+    @discord.ui.button(label="⏭️ Skip Waiting", style=discord.ButtonStyle.secondary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not any(r.name.lower() == self.mod_role for r in interaction.user.roles):
+            await interaction.response.send_message(
+                embed=embed_err("No permission", "Only mods can skip the boot wait."),
+                ephemeral=True
+            )
+            return
+        self.skip_event.set()
+        await interaction.response.send_message(
+            embed=embed_info("Skipped", "Boot wait skipped, attempting to connect now..."),
+            ephemeral=True
+        )
+
+
 @tree.command(name="start", description="Wake the PC and start the Minecraft server")
 async def start(interaction: discord.Interaction):
     config = load_config()
@@ -395,8 +438,23 @@ async def start(interaction: discord.Interaction):
         await interaction.edit_original_response(embed=embed_err("WoL Failed", f"`{e}`"))
         return
 
-    await interaction.edit_original_response(embed=embed_wait("Waking PC...", f"Waiting {config['boot_wait_seconds']}s for your PC to boot."))
-    await asyncio.sleep(config["boot_wait_seconds"])
+    skip_event = asyncio.Event()
+    view = SkipWakeView(config.get("mod_role", ""), skip_event)
+
+    await interaction.edit_original_response(
+        embed=embed_wait("Waking PC...", f"Waiting {config['boot_wait_seconds']}s for your PC to boot."),
+        view=view
+    )
+
+    try:
+        await asyncio.wait_for(skip_event.wait(), timeout=config["boot_wait_seconds"])
+    except asyncio.TimeoutError:
+        pass  # Timer elapsed normally
+
+    await interaction.edit_original_response(
+        embed=embed_wait("Connecting...", "Attempting to launch the Minecraft server."),
+        view=None
+    )
 
     for attempt in range(1, 4):
         try:
@@ -544,6 +602,14 @@ async def botstatus(interaction: discord.Interaction):
     embed.add_field(name="Status", value="🟢 Online", inline=True)
     embed.add_field(name="Uptime", value=f"`{hours}h {minutes}m {seconds}s`", inline=True)
     await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="logs", description="View the last 100 lines of the bot logs")
+async def logs(interaction: discord.Interaction):
+    if not load_config():
+        await interaction.response.send_message(embed=embed_err("Not configured", "Run `/setup` first."), ephemeral=True)
+        return
+    await interaction.response.send_modal(LogsModal())
 
 
 # ── Events ────────────────────────────────────────────────────────────────────
