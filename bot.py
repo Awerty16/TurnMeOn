@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.2.4"  # Update this with each commit
+VERSION = "1.2.5"  # Update this with each commit
 
 CONFIG_FILE = "config.json"
 
@@ -355,24 +355,44 @@ class UpdateBotModal(Modal, title="Update Bot"):
             await interaction.edit_original_response(embed=embed_err("Update failed", str(e)))
 
 
+class CopyLogsView(discord.ui.View):
+    def __init__(self, log_text: str):
+        super().__init__(timeout=None)
+        self.log_text = log_text
+
+    @discord.ui.button(label="📋 Copy Logs", style=discord.ButtonStyle.secondary)
+    async def copy_logs(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            f"```\n{self.log_text}\n```",
+            ephemeral=True
+        )
+
+
 class LogsModal(Modal, title="View Bot Logs"):
     pw_input = TextInput(label="Bot Password", placeholder="Enter the bot password")
+    line_count = TextInput(label="Number of lines (default 100)", placeholder="e.g. 100, 200, 300", required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not check_password(self.pw_input.value):
             await interaction.response.send_message(embed=embed_err("Wrong password"), ephemeral=True)
             return
+        try:
+            lines = int(self.line_count.value.strip()) if self.line_count.value.strip() else 100
+            lines = max(1, min(lines, 500))  # Clamp between 1 and 500
+        except ValueError:
+            lines = 100
         await interaction.response.send_message(embed=embed_wait("Fetching logs..."), ephemeral=True)
         try:
             import subprocess
             result = subprocess.run(
-                ["journalctl", "-u", "minecraftbot", "-n", "100", "--no-pager"],
+                ["journalctl", "-u", "minecraftbot", "-n", str(lines), "--no-pager"],
                 capture_output=True, text=True
             )
             output = result.stdout or "No output returned."
             if len(output) > 1900:
                 output = output[-1900:]
-            await interaction.edit_original_response(embed=embed_info("Bot Logs", f"```\n{output}\n```"))
+            view = CopyLogsView(output)
+            await interaction.edit_original_response(embed=embed_info(f"Bot Logs (last {lines} lines)", f"```\n{output}\n```"), view=view)
         except Exception as e:
             await interaction.edit_original_response(embed=embed_err("Failed to fetch logs", str(e)))
 
@@ -484,7 +504,7 @@ async def stop(interaction: discord.Interaction):
         await interaction.edit_original_response(embed=embed_wait("Stop command sent", "Waiting for the server to shut down..."))
         await asyncio.sleep(10)
         ssh_run("shutdown /s /t 0")
-        await interaction.edit_original_response(embed=embed_ok("Server stopped", "World saved. PC is now hibernating. 💤"))
+        await interaction.edit_original_response(embed=embed_ok("Server stopped", "World saved. PC is now shutting down. 💤"))
     except Exception as e:
         await interaction.edit_original_response(embed=embed_err("Error", str(e)))
 
