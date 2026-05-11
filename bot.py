@@ -474,7 +474,7 @@ async def start(interaction: discord.Interaction):
     )
 
     try:
-        await asyncio.wait_for(skip_event.wait(), timeout=config["boot_wait_seconds"])
+        await asyncio.wait_for(skip_event.wait(), timeout=int(config["boot_wait_seconds"]))
     except asyncio.TimeoutError:
         pass  # Timer elapsed normally
 
