@@ -346,9 +346,16 @@ class UpdateBotModal(Modal, title="Update Bot"):
             url = "https://raw.githubusercontent.com/Awerty16/TurnMeOn/main/bot.py"
             # Download to a temp file first
             urllib.request.urlretrieve(url, "bot_update.py")
+            # Read the new version number out of the downloaded file
+            new_version = "unknown"
+            with open("bot_update.py", "r") as f:
+                for line in f:
+                    if line.startswith("VERSION"):
+                        new_version = line.split('"')[1]
+                        break
             # Swap it in
             os.replace("bot_update.py", "bot.py")
-            await interaction.edit_original_response(embed=embed_ok("Updated!", "Restarting bot in 2 seconds..."))
+            await interaction.edit_original_response(embed=embed_ok(f"Updating to v{new_version}!", "Restarting bot in 2 seconds..."))
             await asyncio.sleep(2)
             os.system("sudo systemctl restart minecraftbot")
         except Exception as e:
