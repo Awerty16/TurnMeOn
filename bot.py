@@ -467,22 +467,34 @@ async def start(interaction: discord.Interaction):
 
     skip_event = asyncio.Event()
     view = SkipWakeView(config.get("mod_role", ""), skip_event)
+    total = int(config["boot_wait_seconds"])
 
-    await interaction.edit_original_response(
-        embed=embed_wait("Waking PC...", f"Waiting {config['boot_wait_seconds']}s for your PC to boot."),
-        view=view
-    )
+    def make_countdown_embed(elapsed):
+        remaining = max(total - elapsed, 0)
+        filled = int((elapsed / total) * 20)
+        bar = "█" * filled + "░" * (20 - filled)
+        return discord.Embed(
+            title="⏳ Waking PC...",
+            description=f"`{bar}`\n⏱️ {elapsed}s elapsed — {remaining}s remaining",
+            color=0xFEE75C
+        )
 
-    try:
-        await asyncio.wait_for(skip_event.wait(), timeout=int(config["boot_wait_seconds"]))
-    except asyncio.TimeoutError:
-        pass  # Timer elapsed normally
+    await interaction.edit_original_response(embed=make_countdown_embed(0), view=view)
+
+    elapsed = 0
+    while elapsed < total:
+        try:
+            await asyncio.wait_for(skip_event.wait(), timeout=5)
+            break  # Skip button was pressed
+        except asyncio.TimeoutError:
+            elapsed = min(elapsed + 5, total)
+            if not skip_event.is_set():
+                await interaction.edit_original_response(embed=make_countdown_embed(elapsed), view=view)
 
     await interaction.edit_original_response(
         embed=embed_wait("Connecting...", "Attempting to launch the Minecraft server."),
         view=None
     )
-
     for attempt in range(1, 4):
         try:
             bat = config["bat_path"]
