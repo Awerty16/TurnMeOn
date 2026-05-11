@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.2.5"  # Update this with each commit
+VERSION = "1.2.6"  # Update this with each commit
 
 CONFIG_FILE = "config.json"
 
