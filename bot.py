@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.2.6"  # Update this with each commit
+VERSION = "1.2.65"  # Update this with each commit
 
 CONFIG_FILE = "config.json"
 
@@ -404,6 +404,36 @@ class LogsModal(Modal, title="View Bot Logs"):
             await interaction.edit_original_response(embed=embed_err("Failed to fetch logs", str(e)))
 
 
+class PiCommandModal(Modal, title="Run Pi Command"):
+    pw_input = TextInput(label="Bot Password", placeholder="Enter the bot password")
+    command = TextInput(label="Command", placeholder="e.g. hostname -I or df -h")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not check_password(self.pw_input.value):
+            await interaction.response.send_message(embed=embed_err("Wrong password"), ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed_wait("Running command..."), ephemeral=True)
+        try:
+            import subprocess
+            result = subprocess.run(
+                self.command.value,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            output = result.stdout or result.stderr or "*(no output returned)*"
+            if len(output) > 1900:
+                output = output[-1900:]
+            await interaction.edit_original_response(
+                embed=embed_info(f"$ {self.command.value}", f"```\n{output}\n```")
+            )
+        except subprocess.TimeoutExpired:
+            await interaction.edit_original_response(embed=embed_err("Timed out", "Command took too long to complete."))
+        except Exception as e:
+            await interaction.edit_original_response(embed=embed_err("Error", str(e)))
+
+
 class RunCommandModal(Modal, title="Run Server Command"):
     command = TextInput(label="Command", placeholder="e.g. say Hello! or op Steve")
 
@@ -627,6 +657,17 @@ async def update(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed_err("Not configured", "Run `/setup` first."), ephemeral=True)
         return
     await interaction.response.send_modal(UpdateBotModal())
+
+
+@tree.command(name="picommand", description="Run a command on the Raspberry Pi (admin only)")
+async def picommand(interaction: discord.Interaction):
+    if not load_config():
+        await interaction.response.send_message(embed=embed_err("Not configured", "Run `/setup` first."), ephemeral=True)
+        return
+    if not has_mod_role(interaction):
+        await interaction.response.send_message(embed=embed_err("No permission", "You don't have the required role to use this command."), ephemeral=True)
+        return
+    await interaction.response.send_modal(PiCommandModal())
 
 
 @tree.command(name="botstatus", description="Show bot version and uptime")
